@@ -94,7 +94,7 @@ export default function Home() {
                 Acapella to MIDI
               </h1>
               <p className="text-[10px] text-white/30 -mt-0.5">
-                Powered by Spotify Basic Pitch
+                Powered by REakRMX
               </p>
             </div>
           </div>
