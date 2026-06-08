@@ -2,7 +2,7 @@
 
 import React, { useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Download, RotateCcw, Music2, Zap, BarChart2, Waves } from 'lucide-react';
+import { Download, RotateCcw, Music2, Zap, BarChart2, Waves, Settings, Sliders, Check, HelpCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { DropZone } from '@/components/acapella/drop-zone';
@@ -14,13 +14,20 @@ import { NoteStats } from '@/components/acapella/note-stats';
 import {
   processAudioToMidi,
   downloadMidiFile,
+  runModelAnalysis,
+  extractNotesFromAnalysis,
+  detectBPM,
   type DetectedNote,
   type ProcessingProgress,
+  type TranscriptionOptions,
+  type ModelAnalysis,
+  TRANSCRIPTION_PRESETS,
 } from '@/lib/audio-engine';
 
 export default function Home() {
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [audioBuffer, setAudioBuffer] = useState<AudioBuffer | null>(null);
+  const [modelAnalysis, setModelAnalysis] = useState<ModelAnalysis | null>(null);
   const [notes, setNotes] = useState<DetectedNote[]>([]);
   const [duration, setDuration] = useState(0);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -29,24 +36,102 @@ export default function Home() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [activeTab, setActiveTab] = useState('waveform');
   const [fileName, setFileName] = useState('');
+  const [bpm, setBpm] = useState(120);
+
+  // Transcription parameters with 'acapella' preset as default for optimal vocal performance
+  const [preset, setPreset] = useState<string>('acapella');
+  const [onsetThresh, setOnsetThresh] = useState(0.35);
+  const [frameThresh, setFrameThresh] = useState(0.25);
+  const [minNoteLen, setMinNoteLen] = useState(6);
+  const [energyTolerance, setEnergyTolerance] = useState(1.5);
+  const [melodiaTrick, setMelodiaTrick] = useState(true);
+  const [minAmplitude, setMinAmplitude] = useState(0.03);
+  const [minDurationSeconds, setMinDurationSeconds] = useState(0.04);
+
+  // Apply new settings to cached model analysis instantly
+  const handleSettingsChange = useCallback(async (newOptions: Partial<TranscriptionOptions>) => {
+    const updatedOptions: TranscriptionOptions = {
+      onsetThresh: newOptions.onsetThresh ?? onsetThresh,
+      frameThresh: newOptions.frameThresh ?? frameThresh,
+      minNoteLen: newOptions.minNoteLen ?? minNoteLen,
+      energyTolerance: newOptions.energyTolerance ?? energyTolerance,
+      melodiaTrick: newOptions.melodiaTrick !== undefined ? newOptions.melodiaTrick : melodiaTrick,
+      minAmplitude: newOptions.minAmplitude ?? minAmplitude,
+      minDurationSeconds: newOptions.minDurationSeconds ?? minDurationSeconds,
+    };
+
+    if (newOptions.onsetThresh !== undefined) setOnsetThresh(newOptions.onsetThresh);
+    if (newOptions.frameThresh !== undefined) setFrameThresh(newOptions.frameThresh);
+    if (newOptions.minNoteLen !== undefined) setMinNoteLen(newOptions.minNoteLen);
+    if (newOptions.energyTolerance !== undefined) setEnergyTolerance(newOptions.energyTolerance);
+    if (newOptions.melodiaTrick !== undefined) setMelodiaTrick(newOptions.melodiaTrick);
+    if (newOptions.minAmplitude !== undefined) setMinAmplitude(newOptions.minAmplitude);
+    if (newOptions.minDurationSeconds !== undefined) setMinDurationSeconds(newOptions.minDurationSeconds);
+
+    if (modelAnalysis) {
+      try {
+        const extractedNotes = await extractNotesFromAnalysis(modelAnalysis, updatedOptions);
+        setNotes(extractedNotes);
+        setBpm(detectBPM(extractedNotes) || 120);
+      } catch (err) {
+        console.error('Error re-processing notes:', err);
+      }
+    }
+  }, [modelAnalysis, onsetThresh, frameThresh, minNoteLen, energyTolerance, melodiaTrick, minAmplitude, minDurationSeconds]);
+
+  const applyPreset = useCallback((presetName: string) => {
+    const selectedPreset = TRANSCRIPTION_PRESETS[presetName];
+    if (selectedPreset) {
+      setPreset(presetName);
+      handleSettingsChange(selectedPreset);
+    }
+  }, [handleSettingsChange]);
 
   const handleFileSelected = useCallback(async (file: File) => {
     setAudioFile(file);
     setFileName(file.name);
     setNotes([]);
     setAudioBuffer(null);
+    setModelAnalysis(null);
     setCurrentTime(0);
     setIsPlaying(false);
     setIsProcessing(true);
 
     try {
-      const result = await processAudioToMidi(file, (p) => {
+      // Step 1: Run model analysis (slow part)
+      const analysis = await runModelAnalysis(file, (p) => {
         setProgress(p);
       });
+      setModelAnalysis(analysis);
+      setAudioBuffer(analysis.audioBuffer);
+      setDuration(analysis.duration);
 
-      setNotes(result.notes);
-      setAudioBuffer(result.audioBuffer);
-      setDuration(result.duration);
+      // Step 2: Extract notes with current parameters
+      setProgress({
+        stage: 'postprocessing',
+        percent: 85,
+        message: 'Extracting note events...',
+      });
+
+      const currentOptions: TranscriptionOptions = {
+        onsetThresh,
+        frameThresh,
+        minNoteLen,
+        energyTolerance,
+        melodiaTrick,
+        minAmplitude,
+        minDurationSeconds,
+      };
+
+      const extractedNotes = await extractNotesFromAnalysis(analysis, currentOptions);
+      setNotes(extractedNotes);
+      setBpm(detectBPM(extractedNotes) || 120);
+
+      setProgress({
+        stage: 'done',
+        percent: 100,
+        message: `Done! Detected ${extractedNotes.length} notes`,
+      });
     } catch (error) {
       console.error('Processing failed:', error);
       setProgress({
@@ -57,7 +142,7 @@ export default function Home() {
     } finally {
       setIsProcessing(false);
     }
-  }, []);
+  }, [onsetThresh, frameThresh, minNoteLen, energyTolerance, melodiaTrick, minAmplitude, minDurationSeconds]);
 
   const handleDownload = useCallback(async () => {
     if (notes.length > 0) {
@@ -68,6 +153,7 @@ export default function Home() {
   const handleReset = useCallback(() => {
     setAudioFile(null);
     setAudioBuffer(null);
+    setModelAnalysis(null);
     setNotes([]);
     setDuration(0);
     setProgress(null);
@@ -75,6 +161,7 @@ export default function Home() {
     setIsPlaying(false);
     setFileName('');
     setIsProcessing(false);
+    setBpm(120);
   }, []);
 
   const hasResults = notes.length > 0 && audioBuffer !== null;
@@ -208,9 +295,194 @@ export default function Home() {
                 </div>
               )}
 
+              {/* Transcription Settings Panel */}
+              {hasResults && !isProcessing && (
+                <div className="bg-white/[0.03] rounded-lg border border-white/[0.06] overflow-hidden">
+                  <div className="px-4 py-2.5 border-b border-white/[0.06] bg-white/[0.01] flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <Sliders className="w-4 h-4 text-green-400" />
+                      <h3 className="text-xs font-semibold text-white/90">AI Transcription Settings</h3>
+                    </div>
+                    <span className="text-[10px] text-green-400/80 bg-green-500/10 px-2 py-0.5 rounded-full font-medium self-start sm:self-auto">
+                      ⚡ Instant Tuning: Neural network outputs are cached
+                    </span>
+                  </div>
+                  
+                  <div className="p-4 space-y-4">
+                    {/* Presets */}
+                    <div>
+                      <span className="text-[10px] text-white/40 block mb-2 font-medium uppercase tracking-wider">Transcription Presets</span>
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                        {[
+                          { id: 'acapella', label: 'Vocal / Acapella', desc: 'Captures subtle runs' },
+                          { id: 'default', label: 'Balanced (Default)', desc: 'Standard vocal/solo' },
+                          { id: 'polyphonic', label: 'Polyphonic', desc: 'Piano, guitar, chords' },
+                          { id: 'strict', label: 'Clean / Strict', desc: 'Fewer noise fragments' }
+                        ].map((p) => (
+                          <button
+                            key={p.id}
+                            type="button"
+                            onClick={() => applyPreset(p.id)}
+                            className={`p-2 rounded-md border text-left transition-all relative ${
+                              preset === p.id
+                                ? 'border-green-500 bg-green-500/10 text-white shadow-[0_0_12px_rgba(34,197,94,0.15)]'
+                                : 'border-white/[0.06] bg-white/[0.02] text-white/50 hover:bg-white/[0.04] hover:text-white/80'
+                            }`}
+                          >
+                            <div className="text-xs font-semibold flex items-center justify-between">
+                              {p.label}
+                              {preset === p.id && <Check className="w-3.5 h-3.5 text-green-400" />}
+                            </div>
+                            <p className="text-[10px] text-white/30 mt-0.5 leading-tight">{p.desc}</p>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <details className="group">
+                      <summary className="cursor-pointer flex items-center gap-1.5 text-xs text-white/40 hover:text-white/60 select-none">
+                        <span>Show Detailed Parameters</span>
+                        <span className="text-[10px] group-open:rotate-180 transition-transform">&#9660;</span>
+                      </summary>
+                      
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4 mt-4 pt-4 border-t border-white/[0.04]">
+                        {/* Onset Threshold */}
+                        <div className="space-y-1.5">
+                          <div className="flex justify-between items-center">
+                            <span className="text-xs font-medium text-white/70 flex items-center gap-1.5">
+                              Onset Sensitivity
+                              <span className="group/tooltip relative cursor-help">
+                                <HelpCircle className="w-3.5 h-3.5 text-white/30 hover:text-white/50" />
+                                <span className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-56 bg-black border border-white/10 text-[10px] text-white/70 p-2 rounded shadow-xl opacity-0 group-hover/tooltip:opacity-100 transition-opacity z-10 leading-normal normal-case font-normal">
+                                  Controls note detection sensitivity. Lower thresholds capture soft/breathier note starts (ideal for acapella).
+                                </span>
+                              </span>
+                            </span>
+                            <span className="text-[11px] text-white/40 font-mono">{(1 - onsetThresh).toFixed(2)}</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="0.15"
+                            max="0.85"
+                            step="0.05"
+                            value={onsetThresh}
+                            onChange={(e) => handleSettingsChange({ onsetThresh: parseFloat(e.target.value) })}
+                            className="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-green-400"
+                          />
+                        </div>
+
+                        {/* Frame Threshold */}
+                        <div className="space-y-1.5">
+                          <div className="flex justify-between items-center">
+                            <span className="text-xs font-medium text-white/70 flex items-center gap-1.5">
+                              Sustain Hold (Frame Thresh)
+                              <span className="group/tooltip relative cursor-help">
+                                <HelpCircle className="w-3.5 h-3.5 text-white/30 hover:text-white/50" />
+                                <span className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-56 bg-black border border-white/10 text-[10px] text-white/70 p-2 rounded shadow-xl opacity-0 group-hover/tooltip:opacity-100 transition-opacity z-10 leading-normal normal-case font-normal">
+                                  Adjusts note sustain length. Lower thresholds keep notes sustained and connected; higher values split/truncate notes.
+                                </span>
+                              </span>
+                            </span>
+                            <span className="text-[11px] text-white/40 font-mono">{(1 - frameThresh).toFixed(2)}</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="0.1"
+                            max="0.8"
+                            step="0.05"
+                            value={frameThresh}
+                            onChange={(e) => handleSettingsChange({ frameThresh: parseFloat(e.target.value) })}
+                            className="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-green-400"
+                          />
+                        </div>
+
+                        {/* Min Note Length */}
+                        <div className="space-y-1.5">
+                          <div className="flex justify-between items-center">
+                            <span className="text-xs font-medium text-white/70 flex items-center gap-1.5">
+                              Minimum Note Length
+                              <span className="group/tooltip relative cursor-help">
+                                <HelpCircle className="w-3.5 h-3.5 text-white/30 hover:text-white/50" />
+                                <span className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-56 bg-black border border-white/10 text-[10px] text-white/70 p-2 rounded shadow-xl opacity-0 group-hover/tooltip:opacity-100 transition-opacity z-10 leading-normal normal-case font-normal">
+                                  Filters out short transient note fragments. Lower values capture fast vocal runs; higher values produce cleaner melodies.
+                                </span>
+                              </span>
+                            </span>
+                            <span className="text-[11px] text-white/40 font-mono">{minNoteLen} frames (~{Math.round(minNoteLen * 11.6)}ms)</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="3"
+                            max="25"
+                            step="1"
+                            value={minNoteLen}
+                            onChange={(e) => handleSettingsChange({ minNoteLen: parseInt(e.target.value) })}
+                            className="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-green-400"
+                          />
+                        </div>
+
+                        {/* Noise Gate / Min Amplitude */}
+                        <div className="space-y-1.5">
+                          <div className="flex justify-between items-center">
+                            <span className="text-xs font-medium text-white/70 flex items-center gap-1.5">
+                              Noise Gate (Amplitude Thresh)
+                              <span className="group/tooltip relative cursor-help">
+                                <HelpCircle className="w-3.5 h-3.5 text-white/30 hover:text-white/50" />
+                                <span className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-56 bg-black border border-white/10 text-[10px] text-white/70 p-2 rounded shadow-xl opacity-0 group-hover/tooltip:opacity-100 transition-opacity z-10 leading-normal normal-case font-normal">
+                                  Eliminates notes with amplitudes below this gate percentage. Filters background noise, breaths, or reverb.
+                                </span>
+                              </span>
+                            </span>
+                            <span className="text-[11px] text-white/40 font-mono">{(minAmplitude * 100).toFixed(0)}%</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="0.01"
+                            max="0.20"
+                            step="0.01"
+                            value={minAmplitude}
+                            onChange={(e) => handleSettingsChange({ minAmplitude: parseFloat(e.target.value) })}
+                            className="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-green-400"
+                          />
+                        </div>
+
+                        {/* Monophonic Vocal Mode */}
+                        <div className="flex items-center justify-between p-2.5 rounded-lg border border-white/[0.04] bg-white/[0.01] md:col-span-2">
+                          <div className="flex flex-col gap-0.5">
+                            <span className="text-xs font-medium text-white/80 flex items-center gap-1.5">
+                              Monophonic Vocal Tracking (Melodia Trick)
+                              <span className="group/tooltip relative cursor-help">
+                                <HelpCircle className="w-3.5 h-3.5 text-white/30 hover:text-white/50" />
+                                <span className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-64 bg-black border border-white/10 text-[10px] text-white/70 p-2 rounded shadow-xl opacity-0 group-hover/tooltip:opacity-100 transition-opacity z-10 leading-normal normal-case font-normal">
+                                  Enforces a single voice pitch line by selecting the most dominant vocal frequency contour, avoiding overlapping/harmonizing notes.
+                                </span>
+                              </span>
+                            </span>
+                            <span className="text-[10px] text-white/30">Restricts pitch detection to a single melodic stream (recommended for solo vocals)</span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleSettingsChange({ melodiaTrick: !melodiaTrick })}
+                            className={`w-9 h-5 rounded-full transition-colors relative flex items-center flex-shrink-0 ${
+                              melodiaTrick ? 'bg-green-500' : 'bg-white/10'
+                            }`}
+                          >
+                            <div
+                              className={`w-3.5 h-3.5 bg-black rounded-full shadow transition-transform absolute ${
+                                melodiaTrick ? 'translate-x-5' : 'translate-x-0.5'
+                              }`}
+                            />
+                          </button>
+                        </div>
+                      </div>
+                    </details>
+                  </div>
+                </div>
+              )}
+
               {/* Stats */}
               {hasResults && (
-                <NoteStats notes={notes} duration={duration} />
+                <NoteStats notes={notes} duration={duration} bpm={bpm} />
               )}
 
               {/* Visualizations */}
@@ -257,6 +529,8 @@ export default function Home() {
                           duration={duration}
                           currentTime={currentTime}
                           isPlaying={isPlaying}
+                          bpm={bpm}
+                          audioBuffer={audioBuffer}
                         />
                       </div>
                     </div>
@@ -279,6 +553,8 @@ export default function Home() {
                           duration={duration}
                           currentTime={currentTime}
                           isPlaying={isPlaying}
+                          bpm={bpm}
+                          audioBuffer={audioBuffer}
                         />
                       </div>
                     </div>

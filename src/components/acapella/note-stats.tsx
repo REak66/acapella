@@ -1,15 +1,16 @@
 'use client';
 
 import React from 'react';
-import { Music, Clock, TrendingUp, BarChart3 } from 'lucide-react';
+import { Music, Clock, TrendingUp, BarChart3, Activity } from 'lucide-react';
 import { DetectedNote, midiPitchToName } from '@/lib/audio-engine';
 
 interface NoteStatsProps {
   notes: DetectedNote[];
   duration: number;
+  bpm?: number;
 }
 
-export function NoteStats({ notes, duration }: NoteStatsProps) {
+export function NoteStats({ notes, duration, bpm = 120 }: NoteStatsProps) {
   if (notes.length === 0) return null;
 
   const avgAmplitude = notes.reduce((sum, n) => sum + n.amplitude, 0) / notes.length;
@@ -32,6 +33,12 @@ export function NoteStats({ notes, duration }: NoteStatsProps) {
       sub: `${notesPerSecond.toFixed(1)} notes/sec`,
     },
     {
+      icon: Activity,
+      label: 'Tempo',
+      value: `${bpm} BPM`,
+      sub: `${(60 / bpm).toFixed(2)}s per beat`,
+    },
+    {
       icon: Clock,
       label: 'Avg Note Duration',
       value: `${(avgDuration * 1000).toFixed(0)}ms`,
@@ -52,7 +59,7 @@ export function NoteStats({ notes, duration }: NoteStatsProps) {
   ];
 
   return (
-    <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+    <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
       {stats.map(({ icon: Icon, label, value, sub }) => (
         <div
           key={label}
